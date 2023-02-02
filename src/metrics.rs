@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, iter::Sum};
 use std::collections::btree_map::Range;
 use chrono::{DateTime, Utc};
+use reqwest::Response;
 
 extern crate pretty_env_logger;
 
@@ -21,6 +22,35 @@ impl ThroughputMetric {
             xx4,
             xx5,
             other
+        }
+    }
+
+    pub fn flush_current_metric(&mut self) {
+        self.xx2 = 0;
+        self.xx3 = 0;
+        self.xx4 = 0;
+        self.xx5 = 0;
+        self.other = 0;
+    }
+
+    pub fn record_response(&mut self, response: Option<&Response>) {
+        match response {
+            Some(response) => {
+                let response = response.status();
+
+                if response.is_success() {
+                    self.increment_xx2()
+                } else if response.is_redirection() {
+                    self.increment_xx3()
+                } else if response.is_client_error() {
+                    self.increment_xx4()
+                } else if response.is_server_error() {
+                    self.increment_xx5()
+                } else {
+                    self.increment_other()
+                }
+            },
+            None => self.increment_other(),
         }
     }
 
@@ -87,6 +117,7 @@ pub trait Reporter {
 pub struct MetricsStore {
     data: BTreeMap<i64, ThroughputMetric>
 }
+
 
 impl Reporter for MetricsStore {
     fn add_record(&mut self, key: i64, value: ThroughputMetric) {

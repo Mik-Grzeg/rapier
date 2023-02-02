@@ -1,6 +1,6 @@
-use chrono::{Local, DateTime, TimeZone, offset::{FixedOffset}, NaiveDateTime, NaiveDate, Utc};
+use chrono::{Local, DateTime, TimeZone, offset::{FixedOffset}, NaiveDateTime, NaiveDate, Utc, Duration};
 
-fn round_up_datetime(time_to_round: DateTime<Utc>, period_in_secs: i64) -> DateTime<Utc> {
+pub fn round_up_datetime(time_to_round: DateTime<Utc>, period_in_secs: i64) -> DateTime<Utc> {
     let since_unix_epoch = time_to_round.timestamp();
 
     let remainder = since_unix_epoch % period_in_secs;
@@ -13,13 +13,17 @@ fn round_up_datetime(time_to_round: DateTime<Utc>, period_in_secs: i64) -> DateT
     DateTime::<Utc>::from_utc(round_timestamp, Utc)
 }
 
+pub fn until_event(period_in_secs: u64) -> std::time::Duration {
+    let now = Utc::now();
+    round_up_datetime(now, period_in_secs as i64).signed_duration_since(now).to_std().unwrap()
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rstest::*;
     use pretty_assertions::{assert_eq, assert_ne};
-
 
     #[rstest]
     #[case::next_window((2022, 6, 20, 20, 10, 37), 60, (2022, 6, 20, 20, 11, 00))]
