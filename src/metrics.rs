@@ -1,7 +1,7 @@
-use std::{collections::BTreeMap, iter::Sum};
-use std::collections::btree_map::Range;
 use chrono::{DateTime, Utc};
 use reqwest::Response;
+
+use std::{collections::BTreeMap, iter::Sum};
 
 extern crate pretty_env_logger;
 
@@ -11,7 +11,7 @@ pub struct ThroughputMetric {
     xx3: u32,
     xx4: u32,
     xx5: u32,
-    other: u32
+    other: u32,
 }
 
 impl ThroughputMetric {
@@ -21,7 +21,7 @@ impl ThroughputMetric {
             xx3,
             xx4,
             xx5,
-            other
+            other,
         }
     }
 
@@ -49,7 +49,7 @@ impl ThroughputMetric {
                 } else {
                     self.increment_other()
                 }
-            },
+            }
             None => self.increment_other(),
         }
     }
@@ -89,21 +89,29 @@ impl std::ops::Add for ThroughputMetric {
 }
 
 impl Sum<ThroughputMetric> for ThroughputMetric {
-    fn sum<I: Iterator<Item =  ThroughputMetric>>(iter: I) -> Self {
+    fn sum<I: Iterator<Item = ThroughputMetric>>(iter: I) -> Self {
         iter.reduce(|acc, e| acc + e).unwrap()
     }
 }
 
 impl std::fmt::Display for ThroughputMetric {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, r#"=======================
+        write!(
+            f,
+            r#"=======================
 |   2xx: {:width$}   |
 |   3xx: {:width$}   |
 |   4xx: {:width$}   |
 |   5xx: {:width$}   |
 | other: {:width$}   |
 ======================="#,
-            self.xx2, self.xx3, self.xx4, self.xx5, self.other, width=10)
+            self.xx2,
+            self.xx3,
+            self.xx4,
+            self.xx5,
+            self.other,
+            width = 10
+        )
     }
 }
 
@@ -115,9 +123,8 @@ pub trait Reporter {
 
 #[derive(Debug, Default)]
 pub struct MetricsStore {
-    data: BTreeMap<i64, ThroughputMetric>
+    data: BTreeMap<i64, ThroughputMetric>,
 }
-
 
 impl Reporter for MetricsStore {
     fn add_record(&mut self, key: i64, value: ThroughputMetric) {
@@ -132,11 +139,8 @@ impl Reporter for MetricsStore {
 
     fn get_metrics_for_period(&self, t1: &DateTime<Utc>, t2: &DateTime<Utc>) -> ThroughputMetric {
         let bounds = t1.timestamp()..t2.timestamp();
-        let (_, values): (Vec<&i64>, Vec<ThroughputMetric>) = self.data.range(bounds)
-            .unzip();
-        let sum: ThroughputMetric = values
-            .into_iter()
-            .sum();
+        let (_, values): (Vec<&i64>, Vec<ThroughputMetric>) = self.data.range(bounds).unzip();
+        let sum: ThroughputMetric = values.into_iter().sum();
 
         info!("{}", sum);
         sum
@@ -146,7 +150,7 @@ impl Reporter for MetricsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, NaiveDate, Duration};
+    use chrono::{Duration, NaiveDate, TimeZone};
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -156,15 +160,18 @@ mod tests {
 
         let record = (*Utc::now().offset())
             .from_utc_datetime(
-                &NaiveDate::from_ymd_opt(2022, 6, 20).unwrap()
-                .and_hms_opt(20, 10, 30).unwrap()
-            ).timestamp();
+                &NaiveDate::from_ymd_opt(2022, 6, 20)
+                    .unwrap()
+                    .and_hms_opt(20, 10, 30)
+                    .unwrap(),
+            )
+            .timestamp();
         let metric = ThroughputMetric {
             xx2: 10,
             xx3: 15,
             xx4: 20,
             xx5: 30,
-            other: 0
+            other: 0,
         };
         // when
         store.add_record(record, metric);
@@ -178,18 +185,19 @@ mod tests {
         // given
         let mut store = MetricsStore::default();
 
-        let record = (*Utc::now().offset())
-            .from_utc_datetime(
-                &NaiveDate::from_ymd_opt(2022, 6, 20).unwrap()
-                .and_hms_opt(20, 10, 30).unwrap()
-            );
+        let record = (*Utc::now().offset()).from_utc_datetime(
+            &NaiveDate::from_ymd_opt(2022, 6, 20)
+                .unwrap()
+                .and_hms_opt(20, 10, 30)
+                .unwrap(),
+        );
         let metric = ThroughputMetric::new((15, 20, 30, 0, 17));
         // when
         store.add_record(record.timestamp(), metric);
         let retrieved_metric = store.get_metrics_for_point_in_time(&record);
 
         //then
-        assert_eq!(*retrieved_metric,  metric)
+        assert_eq!(*retrieved_metric, metric)
     }
 
     #[test]
@@ -197,35 +205,33 @@ mod tests {
         // given
         let mut store = MetricsStore::default();
 
-        let start = (*Utc::now().offset())
-            .from_utc_datetime(
-                &NaiveDate::from_ymd_opt(2022, 6, 20).unwrap()
-                .and_hms_opt(20, 10, 30).unwrap()
-            );
+        let start = (*Utc::now().offset()).from_utc_datetime(
+            &NaiveDate::from_ymd_opt(2022, 6, 20)
+                .unwrap()
+                .and_hms_opt(20, 10, 30)
+                .unwrap(),
+        );
 
         let period_in_secs = 15;
         let points_in_time: Vec<DateTime<Utc>> = (0..3)
             .map(|i| start + Duration::seconds(i) * period_in_secs)
             .collect();
 
-        let metrics = vec![
-            (23, 21, 0, 30, 1),
-            (7, 0, 0, 1, 1),
-            (20, 21, 5, 4, 1),
-        ];
+        let metrics = vec![(23, 21, 0, 30, 1), (7, 0, 0, 1, 1), (20, 21, 5, 4, 1)];
         let recorded_metrics = metrics.into_iter().zip(points_in_time.clone());
 
-        recorded_metrics
-            .into_iter()
-            .for_each(|(metric, time)|
-                store.add_record(time.timestamp(), ThroughputMetric::new(metric))
-            );
+        recorded_metrics.into_iter().for_each(|(metric, time)| {
+            store.add_record(time.timestamp(), ThroughputMetric::new(metric))
+        });
         let expected_aggregated_metric = ThroughputMetric::new((30, 21, 0, 31, 2));
         // when
-        let retrieved_metric = store.get_metrics_for_period(&points_in_time.first().unwrap(), &points_in_time.last().unwrap());
+        let retrieved_metric = store.get_metrics_for_period(
+            &points_in_time.first().unwrap(),
+            &points_in_time.last().unwrap(),
+        );
 
         //then
-        assert_eq!(retrieved_metric,  expected_aggregated_metric)
+        assert_eq!(retrieved_metric, expected_aggregated_metric)
     }
 
     #[test]

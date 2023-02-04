@@ -1,29 +1,36 @@
-use chrono::{Local, DateTime, TimeZone, offset::{FixedOffset}, NaiveDateTime, NaiveDate, Utc, Duration};
+use chrono::{
+    DateTime, NaiveDateTime, TimeZone, Utc,
+};
 
 pub fn round_up_datetime(time_to_round: DateTime<Utc>, period_in_secs: i64) -> DateTime<Utc> {
     let since_unix_epoch = time_to_round.timestamp();
 
     let remainder = since_unix_epoch % period_in_secs;
     if remainder == 0 {
-        return time_to_round
+        return time_to_round;
     }
 
-    let round_timestamp = NaiveDateTime::from_timestamp_opt(since_unix_epoch + period_in_secs - remainder, 0).unwrap();
+    let round_timestamp =
+        NaiveDateTime::from_timestamp_opt(since_unix_epoch + period_in_secs - remainder, 0)
+            .unwrap();
 
     DateTime::<Utc>::from_utc(round_timestamp, Utc)
 }
 
 pub fn until_event(period_in_secs: u64) -> std::time::Duration {
     let now = Utc::now();
-    round_up_datetime(now, period_in_secs as i64).signed_duration_since(now).to_std().unwrap()
+    round_up_datetime(now, period_in_secs as i64)
+        .signed_duration_since(now)
+        .to_std()
+        .unwrap()
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rstest::*;
     use pretty_assertions::{assert_eq, assert_ne};
+    use rstest::*;
+    use chrono::NaiveDate;
 
     #[rstest]
     #[case::next_window((2022, 6, 20, 20, 10, 37), 60, (2022, 6, 20, 20, 11, 00))]
@@ -35,19 +42,26 @@ mod tests {
     fn test_rounding_up_minutes(
         #[case] input: (i32, u32, u32, u32, u32, u32),
         #[case] period_in_secs: i64,
-        #[case] expected: (i32, u32, u32, u32, u32, u32)) {
+        #[case] expected: (i32, u32, u32, u32, u32, u32),
+    ) {
         // given
         let time_to_round: DateTime<Utc> = (*Utc::now().offset())
             .from_utc_datetime(
-                &NaiveDate::from_ymd_opt(input.0, input.1, input.2).unwrap()
-                .and_hms_opt(input.3, input.4, input.5).unwrap()
-            ).into();
+                &NaiveDate::from_ymd_opt(input.0, input.1, input.2)
+                    .unwrap()
+                    .and_hms_opt(input.3, input.4, input.5)
+                    .unwrap(),
+            )
+            .into();
 
         let expected: DateTime<Utc> = (*Utc::now().offset())
             .from_utc_datetime(
-                &NaiveDate::from_ymd_opt(expected.0, expected.1, expected.2).unwrap()
-                .and_hms_opt(expected.3, expected.4, expected.5).unwrap()
-            ).into();
+                &NaiveDate::from_ymd_opt(expected.0, expected.1, expected.2)
+                    .unwrap()
+                    .and_hms_opt(expected.3, expected.4, expected.5)
+                    .unwrap(),
+            )
+            .into();
 
         // when
         let result = round_up_datetime(time_to_round, period_in_secs);
