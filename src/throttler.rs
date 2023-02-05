@@ -1,3 +1,4 @@
+use std::sync::RwLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -7,6 +8,42 @@ pub trait Counter {
     fn increment(&self) -> Self::Type;
     fn get_and_refresh(&self) -> Self::Type;
     fn check_counter_overcommit(&self) -> bool;
+}
+
+#[derive(Default)]
+pub struct ThrottlerRwLock {
+    counter: RwLock<u64>,
+    threshold: Option<u64>,
+}
+
+impl ThrottlerRwLock {
+    pub fn new(threshold: u64) -> Self {
+        ThrottlerRwLock {
+            threshold: Some(threshold),
+            ..Default::default()
+        }
+    }
+}
+
+impl Counter for ThrottlerRwLock {
+    type Type = u64;
+
+    fn increment(&self) -> Self::Type {
+        let mut c = self.counter.write().unwrap();
+        *c += 1;
+        *c
+    }
+
+    fn get_and_refresh(&self) -> Self::Type {
+        let mut c = self.counter.write().unwrap();
+        let old = *c;
+        *c = 0;
+        old
+    }
+
+    fn check_counter_overcommit(&self) -> bool {
+        self.threshold.map_or(false, |threshold| *self.counter.read().unwrap() >= threshold)
+    }
 }
 
 #[derive(Default)]
@@ -54,17 +91,20 @@ mod tests {
     use tokio::task;
 
     #[rstest]
-    #[case(30, 35, true)]
-    #[case(30, 25, false)]
-    #[case(30, 30, true)]
+    #[case(35, true, Throttler::new(30))]
+    #[case(25, false, Throttler::new(30))]
+    #[case(30, true, Throttler::new(30))]
+    #[case(30, true, ThrottlerRwLock::new(30))]
+    #[case(30, true, ThrottlerRwLock::new(30))]
+    #[case(30, true, ThrottlerRwLock::new(30))]
     #[tokio::test]
     async fn check_throttled_flow(
-        #[case] threshold: u64,
         #[case] cummulative_increments_in_counter: u64,
         #[case] expected_overcommit: bool,
+        #[case] throttler: impl Counter::<Type = u64> + Send + Sync + 'static
     ) {
         // given
-        let atmoic = Arc::new(Throttler::new(threshold));
+        let atmoic = Arc::new(throttler);
         let workers = 2;
 
         // when
@@ -95,7 +135,6 @@ mod tests {
         }
 
         // when
-
         assert!(atmoic.check_counter_overcommit());
         let old_val = atmoic.get_and_refresh();
 
