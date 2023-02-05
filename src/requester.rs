@@ -1,11 +1,13 @@
 use super::metrics::{MetricsStore, Reporter, ThroughputMetric};
 use crate::fixed_window::{round_up_datetime, until_event};
+use crate::throttler::{Counter};
 use chrono::Utc;
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use futures::{stream::FuturesUnordered};
 use reqwest::{Client, Method, Response};
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+use std::fmt::Debug;
+
+
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -42,7 +44,7 @@ impl SpyWorker {
             .timeout(Duration::from_secs(1))
             // .http2_prior_knowledge()
             .build()
-            .expect(&format!("Unable to create reqwest client in worker {}", id));
+            .unwrap_or_else(|_| panic!("Unable to create reqwest client in worker {id}"));
 
         Self {
             id,
@@ -73,21 +75,32 @@ impl SpyWorker {
         throttler: Arc<T>,
     ) -> Result<(), reqwest::Error>
     where
-        T: Throttler,
+        T: Counter<Type = u64>,
     {
         loop {
             tokio::select! {
                 res = {
-                    self.client.request(Method::GET, url.clone()).send()
-                } => {
-                    throttler.increment();
-                     match res {
-
-                        Ok(r) => response_sender.send(r).unwrap(),
-                        Err(e) => {
-                            error!("Unable to send request: {}", e);
+                    async {
+                        if !throttler.check_counter_overcommit() {
+                            Some(self.client.request(Method::GET, url.clone()).send().await)
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_micros(200_000)).await;
+                            None
                         }
-                     }
+                    }
+                } => {
+                    match res {
+                        Some(r) => match r {
+                            Ok(response) => {
+                                throttler.increment();
+                                response_sender.send(response).unwrap()
+                            }
+                            Err(e) => {
+                                error!("Unable to send request: {}", e)
+                            }
+                        },
+                        None => continue
+                    }
                   }
                 _ = shutdown.recv() => {
                     info!("Shutting down worker {}", self.id);
@@ -111,10 +124,11 @@ async fn join_handle_choice<T: std::fmt::Debug>(futures: &mut FuturesUnordered<J
     }
 }
 
-async fn reponse_handler(
+async fn reponse_handler<T: Debug>(
     mut response_receiver: mpsc::UnboundedReceiver<Response>,
     mut shutdown_receiver: broadcast::Receiver<()>,
     metrics_period_in_secs: u64,
+    throttler: Arc<impl Counter<Type = T>>,
 ) {
     let start_next_period = Instant::now() + until_event(metrics_period_in_secs);
     let mut interval = interval_at(
@@ -132,6 +146,9 @@ async fn reponse_handler(
 
                 info!("Ended recording interval {}\n{}", period_end, current_metric);
                 current_metric.flush_current_metric();
+
+                let sent_requests = throttler.get_and_refresh();
+                debug!("Throttler counted: {:?}", sent_requests);
             }
             response = response_receiver.recv() => {
                 current_metric.record_response(response.as_ref());
@@ -143,39 +160,20 @@ async fn reponse_handler(
     }
 }
 
-trait Throttler: Send + Sync {
-    type Counter;
-
-    fn increment(&self) -> Self::Counter;
-    fn get_and_refresh(&self) -> Self::Counter;
-}
-
-struct RpsCounter {
-    counter: AtomicU64,
-}
-
-impl Throttler for RpsCounter {
-    type Counter = u64;
-
-    fn get_and_refresh(&self) -> Self::Counter {
-        self.counter.swap(0, Ordering::SeqCst)
-    }
-
-    fn increment(&self) -> Self::Counter {
-        let old = self.counter.fetch_add(1, Ordering::SeqCst);
-        trace!("Incrementing rps counter in current interval to {}", old);
-        old
-    }
-}
-
-pub async fn start_spies(concurrent_workers: usize, url: Url, metrics_period_in_secs: u64) {
+pub async fn start_spies<TR>(
+    concurrent_workers: usize,
+    url: Url,
+    metrics_period_in_secs: u64,
+    throttler: TR,
+) where
+    TR: Counter<Type = u64> + Sync + Send + 'static,
+{
     let mut workers: Vec<Arc<SpyWorker>> = Vec::with_capacity(concurrent_workers);
-    let url: reqwest::Url = url.into();
+    let url: reqwest::Url = url;
 
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let (response_sender, response_receiver) = mpsc::unbounded_channel::<Response>();
-    let counter = AtomicU64::new(0);
-    let throttler = Arc::from(RpsCounter { counter: counter });
+    let throttler = Arc::new(throttler);
 
     debug!("Starting spy");
     let mut worker_futures: FuturesUnordered<_> = (0..concurrent_workers)
@@ -199,7 +197,15 @@ pub async fn start_spies(concurrent_workers: usize, url: Url, metrics_period_in_
         .collect();
 
     let metric_master = tokio::spawn({
-        async move { reponse_handler(response_receiver, shutdown_rx, metrics_period_in_secs).await }
+        async move {
+            reponse_handler(
+                response_receiver,
+                shutdown_rx,
+                metrics_period_in_secs,
+                throttler,
+            )
+            .await
+        }
     });
 
     tokio::select! {

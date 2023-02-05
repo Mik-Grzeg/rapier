@@ -1,6 +1,4 @@
-use chrono::{
-    DateTime, NaiveDateTime, TimeZone, Utc,
-};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 
 pub fn round_up_datetime(time_to_round: DateTime<Utc>, period_in_secs: i64) -> DateTime<Utc> {
     let since_unix_epoch = time_to_round.timestamp();
@@ -28,9 +26,9 @@ pub fn until_event(period_in_secs: u64) -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pretty_assertions::{assert_eq, assert_ne};
-    use rstest::*;
     use chrono::NaiveDate;
+    use pretty_assertions::{assert_eq};
+    use rstest::*;
 
     #[rstest]
     #[case::next_window((2022, 6, 20, 20, 10, 37), 60, (2022, 6, 20, 20, 11, 00))]
@@ -51,8 +49,7 @@ mod tests {
                     .unwrap()
                     .and_hms_opt(input.3, input.4, input.5)
                     .unwrap(),
-            )
-            .into();
+            );
 
         let expected: DateTime<Utc> = (*Utc::now().offset())
             .from_utc_datetime(
@@ -60,8 +57,7 @@ mod tests {
                     .unwrap()
                     .and_hms_opt(expected.3, expected.4, expected.5)
                     .unwrap(),
-            )
-            .into();
+            );
 
         // when
         let result = round_up_datetime(time_to_round, period_in_secs);

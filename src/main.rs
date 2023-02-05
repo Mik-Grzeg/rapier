@@ -1,9 +1,10 @@
 //use anyhow::bail;
 //use std::ops::Bound::Included;
-use clap::{Parser};
+use clap::Parser;
+use rapier::{Throttler};
+
 
 use rapier::start_spies;
-
 
 #[macro_use]
 extern crate log;
@@ -36,14 +37,16 @@ async fn main() {
     let cli = Cli::parse();
     info!("Spy was started with following configuration: {cli:?}");
 
+    let throttler = match cli.throttle {
+        Some(throttle) => Throttler::new(throttle),
+        _ => Throttler::default(),
+    };
+
     start_spies(
         cli.concurrent_workers,
         cli.url,
         cli.metrics_recording_interval,
+        throttler,
     )
     .await;
-    // let throttler = match cli.throttle {
-    //     Some(throttle) => Arc::new(Semaphore::new(throttle as usize)),
-    //     _ => Arc::new(Semaphore::new(0)),
-    // };
 }

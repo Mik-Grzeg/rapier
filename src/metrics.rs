@@ -226,8 +226,8 @@ mod tests {
         let expected_aggregated_metric = ThroughputMetric::new((30, 21, 0, 31, 2));
         // when
         let retrieved_metric = store.get_metrics_for_period(
-            &points_in_time.first().unwrap(),
-            &points_in_time.last().unwrap(),
+            points_in_time.first().unwrap(),
+            points_in_time.last().unwrap(),
         );
 
         //then
