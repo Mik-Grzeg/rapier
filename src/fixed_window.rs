@@ -27,7 +27,7 @@ pub fn until_event(period_in_secs: u64) -> std::time::Duration {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use pretty_assertions::{assert_eq};
+    use pretty_assertions::assert_eq;
     use rstest::*;
 
     #[rstest]
@@ -43,21 +43,19 @@ mod tests {
         #[case] expected: (i32, u32, u32, u32, u32, u32),
     ) {
         // given
-        let time_to_round: DateTime<Utc> = (*Utc::now().offset())
-            .from_utc_datetime(
-                &NaiveDate::from_ymd_opt(input.0, input.1, input.2)
-                    .unwrap()
-                    .and_hms_opt(input.3, input.4, input.5)
-                    .unwrap(),
-            );
+        let time_to_round: DateTime<Utc> = (*Utc::now().offset()).from_utc_datetime(
+            &NaiveDate::from_ymd_opt(input.0, input.1, input.2)
+                .unwrap()
+                .and_hms_opt(input.3, input.4, input.5)
+                .unwrap(),
+        );
 
-        let expected: DateTime<Utc> = (*Utc::now().offset())
-            .from_utc_datetime(
-                &NaiveDate::from_ymd_opt(expected.0, expected.1, expected.2)
-                    .unwrap()
-                    .and_hms_opt(expected.3, expected.4, expected.5)
-                    .unwrap(),
-            );
+        let expected: DateTime<Utc> = (*Utc::now().offset()).from_utc_datetime(
+            &NaiveDate::from_ymd_opt(expected.0, expected.1, expected.2)
+                .unwrap()
+                .and_hms_opt(expected.3, expected.4, expected.5)
+                .unwrap(),
+        );
 
         // when
         let result = round_up_datetime(time_to_round, period_in_secs);

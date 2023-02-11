@@ -1,11 +1,17 @@
 use super::metrics::{MetricsStore, Reporter, ThroughputMetric};
 use crate::fixed_window::{round_up_datetime, until_event};
-use crate::throttler::{Counter};
+
+use crate::throttler::ThrottlerSempahores;
 use chrono::Utc;
 use futures::stream::FuturesUnordered;
-use futures::StreamExt;
-use reqwest::{Client, Method, Response};
+use futures::{FutureExt, StreamExt};
+use reqwest::Url;
+use reqwest::{Client, Method, RequestBuilder, Response};
 use std::fmt::Debug;
+use std::sync::Mutex;
+
+
+use tokio::sync::OwnedSemaphorePermit;
 
 
 use std::sync::Arc;
@@ -15,7 +21,7 @@ use tokio::{
     sync::{broadcast, mpsc},
     time::{interval_at, Instant},
 };
-use url::Url;
+// use url::Url;
 
 // impl<'a> PartialOrd<i32> for RpsCounter<'a> {
 //     fn partial_cmp(&self, other: &i32) -> Option<std::cmp::Ordering> {
@@ -67,44 +73,42 @@ impl SpyWorker {
         // (old_success_rps, old_error_rps)
     }
 
-    async fn sending<T>(
+    async fn sending(
         &self,
         url: reqwest::Url,
-        response_sender: mpsc::UnboundedSender<Response>,
+        response_sender: mpsc::UnboundedSender<(Response, OwnedSemaphorePermit)>,
         mut shutdown: broadcast::Receiver<()>,
-        throttler: Arc<T>,
-    ) -> Result<(), reqwest::Error>
-    where
-        T: Counter<Type = u64>,
-    {
+        throttler: Arc<ThrottlerSempahores>,
+    ) -> Result<(), reqwest::Error> {
+        let mut request_builder: RequestBuilder;
+
         loop {
             tokio::select! {
-                res = {
-                    async {
-                        if !throttler.check_counter_overcommit() {
-                            Some(self.client.request(Method::GET, url.clone()).send().await)
-                        } else {
-                            tokio::time::sleep(tokio::time::Duration::from_micros(200_000)).await;
-                            None
-                        }
-                    }
+                result = {
+                    request_builder = self.client.request(Method::GET, url.clone());
+                    throttler.execute_and_give_permit(
+                        RequestBuilder::send,
+                        request_builder
+                    )
                 } => {
-                    match res {
-                        Some(r) => match r {
-                            Ok(response) => {
-                                throttler.increment();
-                                response_sender.send(response).unwrap()
-                            }
-                            Err(e) => {
-                                error!("Unable to send request: {}", e)
+                    match result {
+                        Ok((out, permit)) => {
+                            match out.await {
+                                Ok(r) => {
+                                    response_sender.send((r, permit)).unwrap();
+                                }
+                                Err(e) => {
+                                    error!("Unable to send request: {}", e);
+                                }
                             }
                         },
-                        None => continue
+                        Err(err) => {
+                            error!("There was an error while getting sempahore permit: {:?}", err);
+                        }
                     }
-                  }
+                }
                 _ = shutdown.recv() => {
-                    info!("Shutting down worker {}", self.id);
-                    break;
+                    break
                 }
             }
         }
@@ -124,11 +128,21 @@ async fn join_handle_choice<T: std::fmt::Debug>(futures: &mut FuturesUnordered<J
     }
 }
 
-async fn reponse_handler<T: Debug>(
+async fn receive_responses(
+    metric: Arc<Mutex<ThroughputMetric>>,
     mut response_receiver: mpsc::UnboundedReceiver<Response>,
+) {
+    loop {
+        let response = response_receiver.recv().await;
+        metric.lock().unwrap().record_response(response.as_ref())
+    }
+}
+
+async fn reponse_handler(
+    mut response_receiver: mpsc::UnboundedReceiver<(Response, OwnedSemaphorePermit)>,
     mut shutdown_receiver: broadcast::Receiver<()>,
     metrics_period_in_secs: u64,
-    throttler: Arc<impl Counter<Type = T>>,
+    throttler: Arc<ThrottlerSempahores>,
 ) {
     let start_next_period = Instant::now() + until_event(metrics_period_in_secs);
     let mut interval = interval_at(
@@ -138,20 +152,24 @@ async fn reponse_handler<T: Debug>(
 
     let mut metrics_store = MetricsStore::default();
     let mut current_metric = ThroughputMetric::default();
+
+    let mut permits: Vec<OwnedSemaphorePermit> = Vec::with_capacity(throttler.threshold() as usize);
+
     loop {
         tokio::select! {
             _ = interval.tick() => {
                 let period_end = round_up_datetime(Utc::now(), metrics_period_in_secs as i64);
                 metrics_store.add_record(period_end.timestamp(), current_metric);
 
+                info!("Throttler counted: {:?}", permits.len());
+                permits.clear();
+
                 info!("Ended recording interval {}\n{}", period_end, current_metric);
                 current_metric.flush_current_metric();
-
-                let sent_requests = throttler.get_and_refresh();
-                debug!("Throttler counted: {:?}", sent_requests);
             }
-            response = response_receiver.recv() => {
-                current_metric.record_response(response.as_ref());
+            Some((response, permit)) = response_receiver.recv() => {
+                current_metric.record_response(Some(&response));
+                permits.push(permit);
             }
             _ = shutdown_receiver.recv() => {
                 break
@@ -160,19 +178,18 @@ async fn reponse_handler<T: Debug>(
     }
 }
 
-pub async fn start_spies<TR>(
+pub async fn start_spies(
     concurrent_workers: usize,
     url: Url,
     metrics_period_in_secs: u64,
-    throttler: TR,
-) where
-    TR: Counter<Type = u64> + Sync + Send + 'static,
-{
+    throttler: ThrottlerSempahores,
+) {
     let mut workers: Vec<Arc<SpyWorker>> = Vec::with_capacity(concurrent_workers);
     let url: reqwest::Url = url;
 
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-    let (response_sender, response_receiver) = mpsc::unbounded_channel::<Response>();
+    let (response_sender, response_receiver) =
+        mpsc::unbounded_channel::<(Response, OwnedSemaphorePermit)>();
     let throttler = Arc::new(throttler);
 
     debug!("Starting spy");

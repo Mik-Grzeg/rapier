@@ -1,83 +1,93 @@
-use std::sync::RwLock;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+
+use reqwest::RequestBuilder;
+
+
+
+
+use std::sync::Arc;
+
+
+
+use tokio::sync::AcquireError;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
+
 
 pub trait Counter {
-    type Type;
+    type Out;
+    type ErrType;
 
-    fn increment(&self) -> Self::Type;
-    fn get_and_refresh(&self) -> Self::Type;
-    fn check_counter_overcommit(&self) -> bool;
+    async fn execute_under_semaphore(&self) -> Result<Self::Out, Self::ErrType>;
+    fn refresh(&self) -> usize;
 }
 
-#[derive(Default)]
-pub struct ThrottlerRwLock {
-    counter: RwLock<u64>,
-    threshold: Option<u64>,
+pub struct ThrottlerSempahores {
+    permits: Arc<Semaphore>,
+    threshold: u64,
 }
 
-impl ThrottlerRwLock {
+// impl<F, Out, U> Counter for ThrottlerSempahores<F, Out, U>
+// where
+//     F: Fn(U) -> Out,
+//     U: IntoUrl + Clone
+// {
+//     type Out = Out;
+//     type ErrType = AcquireError;
+
+//     async fn execute_under_semaphore(&self) -> Result<Out, AcquireError> {
+//         let permit = self.permits.acquire().await?;
+//         let to_return = Ok((self.to_execute)(self.arg.clone()));
+
+//         permit.forget();
+//         to_return
+
+//     }
+
+//     fn refresh(&self) -> usize {
+//         let available_permits = self.permits.available_permits();
+//         self.permits.add_permits(self.threshold as usize - available_permits);
+//         available_permits
+//     }
+// }
+
+impl ThrottlerSempahores {
     pub fn new(threshold: u64) -> Self {
-        ThrottlerRwLock {
-            threshold: Some(threshold),
-            ..Default::default()
+        ThrottlerSempahores {
+            permits: Arc::new(Semaphore::new(threshold as usize)),
+            threshold,
         }
     }
-}
 
-impl Counter for ThrottlerRwLock {
-    type Type = u64;
-
-    fn increment(&self) -> Self::Type {
-        let mut c = self.counter.write().unwrap();
-        *c += 1;
-        *c
+    #[inline]
+    pub fn threshold(&self) -> u64 {
+        self.threshold
     }
 
-    fn get_and_refresh(&self) -> Self::Type {
-        let mut c = self.counter.write().unwrap();
-        let old = *c;
-        *c = 0;
-        old
+    pub async fn execute_under_semaphore<F, Out>(
+        &self,
+        f: F,
+        request_builder: RequestBuilder,
+    ) -> Result<Out, AcquireError>
+    where
+        F: Fn(RequestBuilder) -> Out,
+    {
+        let permit = self.permits.acquire().await?;
+        let to_return = Ok(f(request_builder));
+
+        permit.forget();
+        to_return
     }
 
-    fn check_counter_overcommit(&self) -> bool {
-        self.threshold.map_or(false, |threshold| *self.counter.read().unwrap() >= threshold)
-    }
-}
-
-#[derive(Default)]
-pub struct Throttler {
-    counter: AtomicU64,
-    threshold: Option<u64>,
-}
-
-impl Throttler {
-    pub fn new(threshold: u64) -> Self {
-        Throttler {
-            threshold: Some(threshold),
-            ..Default::default()
-        }
-    }
-}
-
-impl Counter for Throttler {
-    type Type = u64;
-
-    fn get_and_refresh(&self) -> Self::Type {
-        self.counter.swap(0, Ordering::SeqCst)
-    }
-
-    fn increment(&self) -> Self::Type {
-        let old = self.counter.fetch_add(1, Ordering::SeqCst);
-        trace!("Incrementing rps counter in current interval to {}", old);
-        old
-    }
-
-    fn check_counter_overcommit(&self) -> bool {
-        self.threshold.map_or(false, |threshold| {
-            self.counter.load(Ordering::SeqCst) >= threshold
-        })
+    pub async fn execute_and_give_permit<F, Out>(
+        &self,
+        f: F,
+        request_builder: RequestBuilder,
+    ) -> Result<(Out, OwnedSemaphorePermit), AcquireError>
+    where
+        F: Fn(RequestBuilder) -> Out,
+    {
+        let permit = self.permits.clone().acquire_owned().await?;
+        Ok((f(request_builder), permit))
     }
 }
 
@@ -101,7 +111,7 @@ mod tests {
     async fn check_throttled_flow(
         #[case] cummulative_increments_in_counter: u64,
         #[case] expected_overcommit: bool,
-        #[case] throttler: impl Counter::<Type = u64> + Send + Sync + 'static
+        #[case] throttler: impl Counter<Type = u64> + Send + Sync + 'static,
     ) {
         // given
         let atmoic = Arc::new(throttler);

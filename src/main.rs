@@ -1,8 +1,7 @@
 //use anyhow::bail;
 //use std::ops::Bound::Included;
 use clap::Parser;
-use rapier::{Throttler};
-
+use rapier::ThrottlerSempahores;
 
 use rapier::start_spies;
 
@@ -38,8 +37,8 @@ async fn main() {
     info!("Spy was started with following configuration: {cli:?}");
 
     let throttler = match cli.throttle {
-        Some(throttle) => Throttler::new(throttle),
-        _ => Throttler::default(),
+        Some(throttle) => ThrottlerSempahores::new(throttle),
+        _ => ThrottlerSempahores::new(500),
     };
 
     start_spies(
